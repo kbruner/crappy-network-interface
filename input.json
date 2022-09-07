@@ -1,0 +1,15 @@
+{
+    "cniVersion": "1.0.0",
+    "name": "dbnet",
+    "type": "bridge",
+    "bridge": "cni0",
+    "keyA": ["some more", "plugin specific", "configuration"],
+    "ipam": {
+        "type": "host-local",
+        "subnet": "10.1.0.0/16",
+        "gateway": "10.1.0.1"
+    },
+    "dns": {
+        "nameservers": [ "10.1.0.1" ]
+    }
+}

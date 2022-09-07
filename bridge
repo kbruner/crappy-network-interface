@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+
+"""
+Crappy Network Interface
+
+Very minimal Container Network Interface plugin for FreeBSD
+
+Basic usage:
+    1. ONLY reads/honors /etc/cni/net.d/10-bridge.conflist
+    2. Gets request
+    3. Ignores all parameters in the request (particularly the network IPs)
+       (TODO? Sanity check requested config against all config files in
+       /etc/cni/net.d/)
+    4. Returns value
+
+Command notes:
+    ADD - creates only, no modification supported
+    CHECK - unimplemented
+    DEL - not yet implemented
+    VERSIONS - implemented
+
+Notes:
+    * NAT, if desired, must be managed manually
+    * All plugins in one! Does not delegate to plugins
+    * full of non-compliant race conditions
+
+Todo (maybe):
+    * read configuration from /etc/cni/net.d
+    * plugins should be split out
+    * data should be passed internally as structs, probably
+    * no real error handling
+
+Required parameters (CNI spec):
+    CNI_COMMAND
+    CNI_CONTAINERID
+    CNI_IFNAME -- harcoded as "eth0"
+    CNI_NETNS -- FreeBSD doesn't use named network isolation domains (?)
+
+We also ignore the following parameters:
+    CNI_ARGS
+    CNI_PATH -- using /opt/cni/bin
+"""
+
+import ipaddress
+import json
+import os
+import re
+import subprocess
+import sys
+
+
+### Globals
+
+# Don't execute ifconfig
+NOOP = True
+
+conf_file = "/etc/cni/net.d/10-bridge.conflist"
+
+# Supported versions message
+# Pretty sure this doesn't actually support all these versions
+version_json = """
+{
+    "cniVersion": "1.0.0",
+    "supportedVersions": [
+        "0.3.1", "0.4.0", "1.0.0"
+    ]
+}
+"""
+
+
+def cni_command():
+    """
+    Parse, verify, and return CNI_COMMAND verb
+    """
+
+    verbs = ['ADD', 'DEL', 'CHECK', 'VERSION']
+    verb = os.environ.get('CNI_COMMAND')
+    if verb is None or verb not in verbs:
+        return_error(4, 'Invalid CNI_COMMAND',
+            'CNI_COMMAND must be one of ' + ", ".join(verbs))
+    else:
+        return verb
+
+
+
+def verb_add(plugin):
+    """
+    CNI ADD verb
+    """
+
+    ip, net_if = host_local_add(bridge)
+    print(ip)
+
+
+
+def verb_del(plugin):
+    """
+    CNI DEL verb
+    """
+
+    print("not yet implemented")
+
+
+
+def verb_check(plugin):
+    """
+    CNI CHECK verb
+
+    added in CNI v0.4
+
+    Should not get called if "disableCheck" is false in cni conf
+    """
+
+    print("Not implemented")
+    exit(0)
+
+
+
+def verb_version():
+    """
+    CNI VERSION verb
+    """
+
+    print(version_json)
+    exit(0)
+
+
+
+def version_check(version):
+    versions = json.loads(version_json)
+    if version in versions['supportedVersions']:
+        return True
+    else:
+        return False
+
+
+
+def return_error(code, msg, details):
+    """
+    Return the error message as shown at
+    https://github.com/containernetworking/cni/blob/main/SPEC.md#Error
+
+    This method makes no checks on its args
+    """
+
+    return_msg = (cni_version(), code, msg, details)
+    """
+    {
+        "cniVersion": {0},
+        "code": {1},
+        "msg": {2},
+        "details": {3}
+    }
+    """
+
+    print(return_msg)
+    exit(code)
+
+
+
+def container_id():
+    """
+    Check and return CNI_CONTAINERID
+    """
+
+    cid = os.environ.get('CNI_CONTAINERID')
+    if cid is None:
+        return_error(4, "CNI_CONTAINERID unset",
+            "CNI_CONTAINERID must be set")
+    else:
+        return cid
+
+
+
+def host_local_add(bridge):
+    """
+    Create the interface
+
+    tap device number hardcoded for testing, needs to be broken out
+    """
+
+    ip = get_new_ip()
+    tap_number = get_new_tap()
+    tap = "tap" + str(tap_number)
+
+    create_tap(ip, tap, bridge)
+    # return ip, host interface
+    return ip, tap
+
+
+
+def get_new_ip():
+    """
+    Hardcoded stub for now. Should check something stateful for unused IPs
+    in subnet range
+
+    Netmask added later
+
+    Todo: check for free IPs
+    """
+
+    address = "172.16.0.12"
+    return address 
+
+
+def get_new_tap():
+    """
+    Hardcoded stub for now. Should check something stateful for unused tap
+    interface numbers
+
+    Todo: check for unused tap interfaces
+    """
+
+    return 2
+
+
+
+def create_tap(ip, tap_if, bridge):
+    """
+    Create the tap network device
+
+    No error checking here
+    """
+
+    if not NOOP:
+        try:
+            os.system("ifconfig " + tap_if + " create")
+            os.system("ifconfig " + bridge + " addm " + tap_if)
+            os.system("ifconfig " + tap_if + " inet " + ip)
+            os.system("ifconfig " + tap_if + " up")
+        except:
+            return_error(11, "Failed to create device",
+                    "Failed to create network device")
+
+
+
+def get_mac_addr(device):
+    """
+    Parse device MAC addresses from ifconfig output
+    """
+    if not NOOP:
+        try:
+            ifconfig = subprocess.run(["ifconfig", device],
+                    stdout=subprocess.PIPE)
+            ifout = ifconfig.stdout.decode('UTF-8')
+            print(ifout)
+
+            em = re.compile(r'ether\s+(..:..:..:..:..:..)')
+            m = em.search(ifout)
+            print(m.group(1))
+        except:
+            return_error(11, "Failed status check",
+                    "Failed to get network status")
+
+
+
+def cni_version():
+    versions = json.loads(version_json)
+    return versions['cniVersion']
+
+
+
+def fix_netmask(octet_mask):
+    """
+    Convert xxx.xxx.xxx.xxx mask to /xx
+    ipaddress module only return octet format
+    """
+
+    nm_octets = nm_octet.split('.')
+    cidr = sum([bin(int(octet)).count('1') for octet in nm_octets.split('.')])
+    return cidr
+
+
+
+def read_conf(conf_file):
+    """
+    Read the CNI plugin configuration file and parse out the values
+    """
+
+    try:
+        config = json.load(conf_file)
+        return config
+    except:
+        return_error(100, "Cannot open configuration",
+                "Cannot read available configuration in " + conf_file)
+
+
+
+def main():
+    cni_input = sys.stdin.readlines()
+
+    read_conf(conf_file)
+
+    # TODO validate passed config against /etc/cni/net.d conf(s)
+
+    verb = cni_command()
+    if verb == "ADD":
+        verb_add(plugin)
+    elif verb == "DEL":
+        verb_del(plugin)
+    elif verb == "CHECK":
+        verb_check(plugin)
+    elif verb == "VERSION":
+        verb_version()
+
+
+
+if __name__ == "__main__":
+    main()

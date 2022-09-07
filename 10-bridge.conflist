@@ -1,0 +1,30 @@
+{
+  "cniVersion": "1.0.0",
+  "name": "bridge",
+  "disableCheck": true,
+  "plugins": [
+    {
+      "type": "bridge",
+      "bridge": "bridge0",
+      "isGateway": true,
+      "ipMasq": true,
+      "promiscMode": true,
+      "dns": {
+        "nameservers": ["172.16.0.1"],
+        "domain": "containerd.local"
+      },
+      "ipam": {
+        "type": "host-local",
+        "subnet": "172.16.0.0/24",
+        "gateway": "172.16.0.1",
+        "routes": [
+          { "dst": "0.0.0.0/0" }
+        ]
+      }
+    },
+    {
+      "type": "host-local"
+    }
+  ]
+}
+
