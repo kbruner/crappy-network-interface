@@ -8,9 +8,7 @@ Very minimal Container Network Interface plugin for FreeBSD
 Basic usage:
     1. ONLY reads/honors /etc/cni/net.d/10-bridge.conflist
     2. Gets request
-    3. Ignores all parameters in the request (particularly the network IPs)
-       (TODO? Sanity check requested config against all config files in
-       /etc/cni/net.d/)
+    3. ???
     4. Returns value
 
 Command notes:
@@ -20,6 +18,7 @@ Command notes:
     VERSIONS - implemented
 
 Notes:
+    * IPv4 only
     * NAT, if desired, must be managed manually
     * All plugins in one! Does not delegate to plugins
     * full of non-compliant race conditions
@@ -44,6 +43,7 @@ We ignore the following parameters:
 import ipaddress
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -53,8 +53,6 @@ import sys
 
 # Don"t execute ifconfig
 NOOP = True
-
-cni_conf_file = "/etc/cni/net.d/10-bridge.conflist"
 
 # Supported versions message
 # Pretty sure this doesn"t actually support all these versions
@@ -91,6 +89,13 @@ class CNIConfig:
     def bridge(self):
         return self.config["bridge"]
 
+    def subnet(self):
+        return self.config["ipam"]["subnet"]
+
+    def gateway(self):
+        return self.config["ipam"]["gateway"]
+
+
 
 class CNIRequest:
     """
@@ -121,7 +126,6 @@ class CNIRequest:
             elif ev == "CNI_NETNS":
                 self.netns = self.__read_var(ev)
 
-
     def __verb(self):
         verb = os.environ.get("CNI_COMMAND")
         if verb is None or verb not in CNIRequest.verbs:
@@ -131,23 +135,79 @@ class CNIRequest:
             return verb
 
     def __read_var(self, ev):
-        try:
-            value = os.environ.get(ev)
-        except:
+        value = os.environ.get(ev)
+        if value is None:
             return_error(4, ev + " invalid", ev + " parameter invalid")
-        return value
+        else:
+            return value
 
 
-def command_add(request, cni):
+class AddResult:
+    """
+    Holds structure for ADD results
+    """
+    def __init__(self, cni, request):
+        self.cni_version = CNIConfig.cni_version()
+        self.cni = cni
+        self.request = request
+        self.interfaces = [
+                {
+                    "name": "eth0",
+                    "mac": gen_mac_addr(),
+                    "sandbox": request.netns
+                }
+        ]
+        self.ips = [
+                {
+                    "version": "4",
+                    "gateway": self.cni.gateway()
+                }
+        ]
+
+
+    def set_address(self, address):
+        self.ips[0]["address"] = address
+
+    def set_interface(self, interface):
+        self.ips[0]["interface"] = interface
+
+    def json_output(self):
+        result = {
+                "cniVersion": self.cni_version,
+                "interfaces": self.interfaces,
+                "ips": self.ips
+                }
+        return json.dumps(result)
+
+
+
+class DelResult:
+    """
+    Holds structure for ADD results
+
+    Not done
+    """
+    def __init__(self):
+        self.cni_version = CNIConfig.cni_version()
+        self.cni = cni
+        self.request = request
+
+
+
+def command_add(cni, request):
     """
     CNI ADD verb
     """
 
+    result = AddResult(cni, request)
     ip, net_if = host_local_add(cni.bridge)
-    print(ip)
+    result.set_address(ip)
+    result.set_interface(net_if)
+
+    print(result.json_output())
 
 
-def command_del(plugin):
+def command_del(cni, request):
     """
     CNI DEL verb
     """
@@ -156,7 +216,7 @@ def command_del(plugin):
     exit(1)
 
 
-def command_check(plugin):
+def command_check(cni, request):
     """
     CNI CHECK verb
 
@@ -190,14 +250,14 @@ def return_error(code, msg, details):
     return_msg = (CNIConfig.cni_version(), code, msg, details)
     """
     {
-        "cniVersion": {0},
-        "code": {1},
-        "msg": {2},
-        "details": {3}
+      "cniVersion": {0},
+      "code": {1},
+      "msg": {2},
+      "details": {3}
     }
     """
 
-    print(return_msg)
+    print(return_msg, file=sys.stderr)
     exit(code)
 
 
@@ -228,7 +288,7 @@ def get_new_ip():
     """
 
     address = "172.16.0.12"
-    return address 
+    return address
 
 
 def get_new_tap():
@@ -279,6 +339,18 @@ def get_mac_addr(device):
                     "Failed to get network status")
 
 
+def gen_mac_addr():
+    """
+    Generate random MAC address
+    """
+
+    hexes = [ 0x01, 0x02, 0x03,
+            random.randint(0x00, 0xff),
+            random.randint(0x00, 0xff),
+            random.randint(0x00, 0xff) ]
+    return ":".join(f"{n:02X}" for n in hexes)
+
+
 def fix_netmask(octet_mask):
     """
     Convert xxx.xxx.xxx.xxx mask to /xx
@@ -295,15 +367,16 @@ def main():
     request = CNIRequest()
 
     input_json = "".join(sys.stdin.readlines())
-    plugin = CNIConfig(input_json)
     # TODO validate passed config against /etc/cni/net.d conf(s)
+    plugin = CNIConfig(input_json)
+
 
     if request.command == "ADD":
-        command_add(request, plugin)
+        command_add(plugin, request)
     elif request.command == "DEL":
-        command_del(request, plugin)
+        command_del(plugin, request)
     elif request.command == "CHECK":
-        command_check(request, plugin)
+        command_check(plugin, request)
     elif request.command == "VERSION":
         command_version()
 

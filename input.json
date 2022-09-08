@@ -1,15 +1,19 @@
 {
-    "cniVersion": "1.0.0",
-    "name": "dbnet",
-    "type": "bridge",
-    "bridge": "cni0",
-    "keyA": ["some more", "plugin specific", "configuration"],
-    "ipam": {
-        "type": "host-local",
-        "subnet": "10.1.0.0/16",
-        "gateway": "10.1.0.1"
-    },
-    "dns": {
-        "nameservers": [ "10.1.0.1" ]
-    }
+  "cniVersion": "1.0.0",
+  "name": "bridge",
+  "type": "bridge",
+  "bridge": "bridge0",
+  "disableCheck": true,
+  "ipam": {
+    "type": "host-local",
+    "subnet": "172.16.0.0/24",
+    "gateway": "172.16.0.1",
+    "routes": [
+      { "dst": "0.0.0.0/0" }
+    ]
+  },
+  "dns": {
+    "nameservers": ["172.16.0.1"],
+    "domain": "containerd.local"
+  }
 }
