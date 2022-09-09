@@ -1,6 +1,6 @@
 {
   "cniVersion": "1.0.0",
-  "name": "bridge",
+  "name": "cni",
   "type": "bridge",
   "bridge": "bridge0",
   "disableCheck": true,
