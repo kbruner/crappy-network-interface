@@ -34,7 +34,8 @@ Required parameters (CNI spec):
     CNI_COMMAND
     CNI_CONTAINERID
     CNI_IFNAME -- harcoded as "eth0"
-    CNI_NETNS -- ignored in FreeBSD, which doesn't support network namespaces
+    CNI_NETNS -- Required for ADD;
+                 ignored in FreeBSD, which doesn't support network namespaces
 
 We ignore the following parameters:
     CNI_ARGS
@@ -73,14 +74,35 @@ versions_json = """
 class CNIConfig:
     """
     Methods for reading CNI config values
+
+    Probably should read this from /etc/cni/etc.d and parse the plugin input
+    separately
+
+    Reusing class for ADD (which seems like it should match /etc/cni/etc.d
+    config?) and DEL (which is passed a different structure)
+
+    prevResult should really be handled as a subclass/separate object
     """
 
-    def __init__(self, input):
+    def __init__(self, input, request):
+        self.input = input
+        self.request = request
         self.config = CNIConfig.__read_input(input)
         self.cni_version = CNIConfig.cni_version()
-        self.bridge = self.config["bridge"]
-        self.subnet = self.config["ipam"]["subnet"]
-        self.gateway = self.config["ipam"]["gateway"]
+
+        if self.request.command == "ADD":
+            self.subnet = self.config["ipam"]["subnet"]
+            self.gateway = self.config["ipam"]["gateway"]
+            self.bridge = self.config["bridge"]
+
+        if self.config["prevResult"]:
+            # Probably not compliant
+            try:
+                self.interface = self.config["prevResult"]["ips"][0]["interface"]
+            except:
+                if self.request.command == "DEL":
+                    return_error(6, "Interface missing",
+                        "Cannot read interface field in prevResult")
 
     def cni_version():
         versions = json.loads(versions_json)
@@ -111,7 +133,7 @@ class CNIRequest:
         CNI_PATH -- using /opt/cni/bin
     """
 
-    env_vars = ["CNI_COMMAND", "CNI_CONTAINERID", "CNI_IFNAME", "CNI_NETNS"]
+    env_vars = ["CNI_COMMAND", "CNI_CONTAINERID", "CNI_IFNAME" "CNI_NETNS"]
     verbs = ["ADD", "DEL", "CHECK", "VERSION"]
 
     def __init__(self):
@@ -135,8 +157,13 @@ class CNIRequest:
             return verb
 
     def __read_var(self, ev):
+        # Sloppy way of handling sometimes-required params
         value = os.environ.get(ev)
-        if value is None:
+        if self.command == "DEL" and value is None:
+            # Not actually required for DEL
+            return ""
+        elif value is None:
+            # Required for ADD and CHECK
             return_error(4, ev + " invalid", ev + " parameter invalid")
         else:
             return value
@@ -193,19 +220,6 @@ class AddResult:
 
 
 
-class DelResult:
-    """
-    Holds structure for DEL command results
-
-    Not implemented (obv)
-    """
-    def __init__(self):
-        self.cni_version = CNIConfig.cni_version()
-        self.cni = cni
-        self.request = request
-
-
-
 ################
 # Global methods (for now?)
 ################
@@ -216,11 +230,12 @@ def command_add(cni, request):
     """
 
     result = AddResult(cni, request)
-    ip, net_if = host_local_add(cni, request)
+    ip, if_number = host_local_add(cni, request)
     result.set_address(ip)
-    result.set_interface(net_if)
+    result.set_interface(if_number)
 
     print(result.json_output())
+    exit(0)
 
 
 def command_del(cni, request):
@@ -228,10 +243,12 @@ def command_del(cni, request):
     CNI DEL verb
     """
 
-    result = DelResult(cni, request)
-
-    print("not yet implemented")
-    exit(1)
+    # Should only return 0 as errors shouldn't bubble up but *shrug*
+    code = host_local_del(cni, request)
+    if code:
+        exit(0)
+    else:
+        exit(1)
 
 
 def command_check(cni, request):
@@ -240,10 +257,10 @@ def command_check(cni, request):
 
     added in CNI v0.4
 
-    Should not get called if "disableCheck" is false in cni conf
+    required for CNI v1.0.0, at least for internal use?
     """
 
-    print("Not implemented")
+    print("Not implemented; CHECK disabled")
     exit(0)
 
 
@@ -286,13 +303,24 @@ def host_local_add(cni, request):
     """
 
     ip = get_new_ip(cni)
-    tap_number = get_new_tap()
-    tap = "tap" + str(tap_number)
+    if_number = get_new_netif()
+    tap = "tap" + str(if_number)
     bridge = cni.bridge
 
-    create_tap(request, ip, tap, bridge)
+    create_netif(request, ip, tap, bridge)
     # return ip, host interface
-    return ip, tap
+    return ip, if_number
+
+
+def host_local_del(cni, request):
+    """
+    Delete the interface
+    """
+
+    if_number = cni.interface
+    tap = "tap" + str(if_number)
+
+    return delete_netif(request, tap)
 
 
 def get_new_ip(cni):
@@ -313,7 +341,7 @@ def get_new_ip(cni):
     return cidr
 
 
-def get_new_tap():
+def get_new_netif():
     """
     Hardcoded stub for now. Should check something stateful for unused tap
     interface numbers
@@ -325,33 +353,45 @@ def get_new_tap():
     return tap_no
 
 
-def create_tap(request, ip, tap_if, bridge):
+def create_netif(request, ip, netif, bridge):
     """
     Create the tap network device
 
     No error checking here
-    """
 
-    print(f"ip {ip}, tap_if {tap_if}, bridge {bridge}")
-
-    """
     Note that these commands are idempotent on FreeBSD;
     even if the device configurations already exist, as long as the
     configuration requests match, they will return true
     """
     if not request.noop:
         try:
-            print("creating tap_if")
-            os.system("ifconfig " + tap_if + " create")
-            print("addm tap_if " + tap_if)
-            os.system("ifconfig " + bridge + " addm " + tap_if)
-            print("set tap_if IP")
-            os.system("ifconfig " + tap_if + " inet " + ip)
-            print("tap_ip up")
-            os.system("ifconfig " + tap_if + " up")
+            os.system("ifconfig " + netif + " create")
+            os.system("ifconfig " + bridge + " addm " + netif)
+            os.system("ifconfig " + netif + " inet " + ip)
+            os.system("ifconfig " + netif + " up")
         except:
             return_error(11, "Failed to create device",
                     "Failed to create network device")
+
+
+def delete_netif(request, netif):
+    """
+    Delete the tap network device
+
+    No error checking here
+
+    Note that these commands are idempotent on FreeBSD;
+    if the requested interface does not exist for any reason,
+    they will still return true
+    """
+
+    if not request.noop:
+        try:
+            os.system("ifconfig " + netif + " destroy")
+        except:
+            return_error(7, "Failed to delete device",
+                    "Failed to delete network device")
+    return True
 
 
 def get_device_mac(request, device):
@@ -363,11 +403,9 @@ def get_device_mac(request, device):
             ifconfig = subprocess.run(["ifconfig", device],
                     stdout=subprocess.PIPE)
             ifout = ifconfig.stdout.decode("UTF-8")
-            print(ifout)
 
             em = re.compile(r"ether\s+(..:..:..:..:..:..)")
             m = em.search(ifout)
-            print(m.group(1))
         except:
             return_error(11, "Failed status check",
                     "Failed to get network status")
@@ -401,7 +439,7 @@ def main():
 
     input_json = "".join(sys.stdin.readlines())
     # TODO validate passed config against /etc/cni/net.d conf(s)
-    plugin = CNIConfig(input_json)
+    plugin = CNIConfig(input_json, request)
 
     if request.command == "ADD":
         command_add(plugin, request)
