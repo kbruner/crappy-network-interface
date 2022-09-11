@@ -42,6 +42,7 @@ We ignore the following parameters:
     CNI_PATH -- using /opt/cni/bin
 """
 
+from abc import ABC, abstractmethod
 import ipaddress
 import json
 import os
@@ -94,11 +95,17 @@ class CNIConfig:
             self.subnet = self.config["ipam"]["subnet"]
             self.gateway = self.config["ipam"]["gateway"]
             self.bridge = self.config["bridge"]
+        else:
+            self.subnet = None
+            self.gateway = None
+            self.bridge = None
 
-        if self.config["prevResult"]:
+        self.if_number = None
+
+        if "prevResult" in self.config:
             # Probably not compliant
             try:
-                self.interface = self.config["prevResult"]["ips"][0]["interface"]
+                self.if_number = self.config["prevResult"]["ips"][0]["interface"]
             except:
                 if self.request.command == "DEL":
                     return_error(6, "Interface missing",
@@ -133,7 +140,7 @@ class CNIRequest:
         CNI_PATH -- using /opt/cni/bin
     """
 
-    env_vars = ["CNI_COMMAND", "CNI_CONTAINERID", "CNI_IFNAME" "CNI_NETNS"]
+    env_vars = ["CNI_COMMAND", "CNI_CONTAINERID", "CNI_IFNAME", "CNI_NETNS"]
     verbs = ["ADD", "DEL", "CHECK", "VERSION"]
 
     def __init__(self):
@@ -159,9 +166,9 @@ class CNIRequest:
     def __read_var(self, ev):
         # Sloppy way of handling sometimes-required params
         value = os.environ.get(ev)
-        if self.command == "DEL" and value is None:
+        if self.command == "DEL" and ev == "CNI_NETNS" and value is None:
             # Not actually required for DEL
-            return ""
+            return None
         elif value is None:
             # Required for ADD and CHECK
             return_error(4, ev + " invalid", ev + " parameter invalid")
@@ -180,6 +187,150 @@ class CNIRequest:
             return False
 
 
+class NetIf(ABC):
+    """
+    Interface for OS-level network interface configuration
+    """
+    def __init__(self, cni, request):
+        self.cni = cni
+        self.request = request
+        self.bridge = self.cni.bridge
+        self.if_name = None
+
+        if self.cni.if_number:
+            self.if_number = self.cni.if_number
+        else:
+            self.if_number = None
+
+        self.ip = None
+        self.mac_addr = None
+
+    @abstractmethod
+    def create(self):
+        pass
+
+    @abstractmethod
+    def delete(self):
+        pass
+
+    @abstractmethod
+    def allocate(self):
+        pass
+
+    @abstractmethod
+    def read_mac_addr(request, device):
+        pass
+
+    @abstractmethod
+    def new_ip(self):
+        pass
+
+class FreeBSDNetIf(NetIf):
+    """
+    NetIf implementation for FreeBSD systems
+    """
+
+    # Prefix for virt network device
+    interface_type = "tap"
+
+    def __init__(self, cni, request):
+        super().__init__(cni, request)
+
+
+    def create(self):
+        """
+        Create the tap network device
+
+        No error checking here
+
+        Note that these commands are idempotent on FreeBSD;
+        even if the device configurations already exist, as long as the
+        configuration requests match, they will return true
+        """
+        self.allocate()
+        self.new_ip()
+
+        if not self.request.noop:
+            try:
+                bridge = self.bridge
+                if_name = self.if_name
+                ip = self.ip
+                os.system(f'ifconfig {if_name} create')
+                os.system(f'ifconfig {bridge} addm {if_name}')
+                os.system(f'ifconfig {if_name} inet {ip}')
+                os.system(f'ifconfig {if_name} up')
+            except:
+                return_error(11, "Failed to create device",
+                        "Failed to create network device")
+
+
+    def allocate(self):
+        """
+        Hardcoded stub for now. Should check something stateful for unused tap
+        interface numbers
+
+        TODO: check for unused tap interfaces
+        """
+
+        number = 2
+        self.if_number = number
+        self.if_name = FreeBSDNetIf.interface_type + str(number)
+
+
+    def delete(self):
+        """
+        Delete the tap network device
+
+        No error checking here
+
+        Note that these commands are idempotent on FreeBSD;
+        if the requested interface does not exist for any reason,
+        they will still return true
+        """
+
+        if not self.request.noop:
+            try:
+                os.system("ifconfig " + self.if_name + " destroy")
+            except:
+                return_error(7, "Failed to delete device",
+                        "Failed to delete network device")
+        return True
+
+
+    def read_mac_addr(request, device):
+        """
+        Parse device MAC address from ifconfig output
+        """
+        if not request.noop:
+            try:
+                ifconfig = subprocess.run(["ifconfig", device],
+                        stdout=subprocess.PIPE)
+                ifout = ifconfig.stdout.decode("UTF-8")
+
+                em = re.compile(r"ether\s+(..:..:..:..:..:..)")
+                m = em.search(ifout)
+            except:
+                return 1
+
+
+    def new_ip(self):
+        """
+        Hardcoded stub for now. Should check something stateful for unused IPs
+        in subnet range
+
+        Todo: check for free IPs
+        """
+
+        # hardcode for now
+        ip = "172.16.0.12"
+        subnet = self.cni.subnet
+        subnet_cidr = ipaddress.ip_network(subnet)
+        netmask = str(subnet_cidr.netmask)
+        cidr_nm = fix_netmask(netmask)
+        cidr = f'{ip}/{cidr_nm}'
+        self.ip = cidr
+
+
 
 class AddResult:
     """
@@ -193,7 +344,7 @@ class AddResult:
                 {
                     "name": "eth0",
                     "mac": gen_mac_addr(),
-                    "sandbox": request.netns
+                    "sandbox": self.request.netns
                 }
         ]
         self.ips = [
@@ -230,7 +381,8 @@ def command_add(cni, request):
     """
 
     result = AddResult(cni, request)
-    ip, if_number = host_local_add(cni, request)
+    netif = FreeBSDNetIf(cni, request)
+    ip, if_number = host_local_add(netif)
     result.set_address(ip)
     result.set_interface(if_number)
 
@@ -244,7 +396,8 @@ def command_del(cni, request):
     """
 
     # Should only return 0 as errors shouldn't bubble up but *shrug*
-    code = host_local_del(cni, request)
+    netif = FreeBSDNetIf(cni, request)
+    code = host_local_del(netif)
     if code:
         exit(0)
     else:
@@ -295,120 +448,21 @@ def return_error(code, msg, details):
     exit(code)
 
 
-def host_local_add(cni, request):
+def host_local_add(netif):
     """
     Create the interface
-
-    tap device number hardcoded for testing, needs to be broken out
     """
 
-    ip = get_new_ip(cni)
-    if_number = get_new_netif()
-    tap = "tap" + str(if_number)
-    bridge = cni.bridge
-
-    create_netif(request, ip, tap, bridge)
-    # return ip, host interface
-    return ip, if_number
+    netif.create()
+    return netif.ip, netif.if_number
 
 
-def host_local_del(cni, request):
+def host_local_del(netif):
     """
     Delete the interface
     """
 
-    if_number = cni.interface
-    tap = "tap" + str(if_number)
-
-    return delete_netif(request, tap)
-
-
-def get_new_ip(cni):
-    """
-    Hardcoded stub for now. Should check something stateful for unused IPs
-    in subnet range
-
-    Todo: check for free IPs
-    """
-
-    # hardcode for now
-    ip = "172.16.0.12"
-    subnet = cni.subnet
-    subnet_cidr = ipaddress.ip_network(subnet)
-    netmask = str(subnet_cidr.netmask)
-    cidr_nm = fix_netmask(netmask)
-    cidr = f'{ip}/{cidr_nm}'
-    return cidr
-
-
-def get_new_netif():
-    """
-    Hardcoded stub for now. Should check something stateful for unused tap
-    interface numbers
-
-    Todo: check for unused tap interfaces
-    """
-
-    tap_no = 2
-    return tap_no
-
-
-def create_netif(request, ip, netif, bridge):
-    """
-    Create the tap network device
-
-    No error checking here
-
-    Note that these commands are idempotent on FreeBSD;
-    even if the device configurations already exist, as long as the
-    configuration requests match, they will return true
-    """
-    if not request.noop:
-        try:
-            os.system("ifconfig " + netif + " create")
-            os.system("ifconfig " + bridge + " addm " + netif)
-            os.system("ifconfig " + netif + " inet " + ip)
-            os.system("ifconfig " + netif + " up")
-        except:
-            return_error(11, "Failed to create device",
-                    "Failed to create network device")
-
-
-def delete_netif(request, netif):
-    """
-    Delete the tap network device
-
-    No error checking here
-
-    Note that these commands are idempotent on FreeBSD;
-    if the requested interface does not exist for any reason,
-    they will still return true
-    """
-
-    if not request.noop:
-        try:
-            os.system("ifconfig " + netif + " destroy")
-        except:
-            return_error(7, "Failed to delete device",
-                    "Failed to delete network device")
-    return True
-
-
-def get_device_mac(request, device):
-    """
-    Parse device MAC addresses from ifconfig output
-    """
-    if not request.noop:
-        try:
-            ifconfig = subprocess.run(["ifconfig", device],
-                    stdout=subprocess.PIPE)
-            ifout = ifconfig.stdout.decode("UTF-8")
-
-            em = re.compile(r"ether\s+(..:..:..:..:..:..)")
-            m = em.search(ifout)
-        except:
-            return_error(11, "Failed status check",
-                    "Failed to get network status")
+    return netif.delete()
 
 
 def gen_mac_addr():
