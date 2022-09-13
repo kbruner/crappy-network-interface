@@ -93,9 +93,13 @@ class CNIConfig:
         self.cni_version = CNIConfig.cni_version()
 
         if self.request.command == "ADD":
-            self.subnet = self.config["ipam"]["subnet"]
-            self.gateway = self.config["ipam"]["gateway"]
-            self.bridge = self.config["bridge"]
+            try:
+                self.subnet = self.config["ipam"]["subnet"]
+                self.gateway = self.config["ipam"]["gateway"]
+                self.bridge = self.config["bridge"]
+            except:
+                return_error(7, "Bad input",
+                    "Input missing required ADD parameters")
         else:
             self.subnet = None
             self.gateway = None
@@ -103,14 +107,26 @@ class CNIConfig:
 
         self.if_number = None
 
-        if "prevResult" in self.config:
+        if "prevResult" in self.config.keys() and self.request.command == "ADD":
             # Probably not compliant
             try:
+                self.prev_result = self.config["prevResult"]
                 self.if_number = self.config["prevResult"]["ips"][0]["interface"]
             except:
                 if self.request.command == "DEL":
                     return_error(6, "Interface missing",
                         "Cannot read interface field in prevResult")
+        elif "prevResult" not in self.config and self.request.command == "DEL":
+            # requires prevResult
+             return_error(6, "prevResult missing in input",
+                   "prevResult is not in input json")
+
+        elif "prevResult" in self.config:
+            # this shouldn't happen but ok
+            self.prev_result = self.config["prevResult"]
+        else:
+            self.prev_result = None
+
 
     def cni_version():
         versions = json.loads(versions_json)
@@ -119,10 +135,12 @@ class CNIConfig:
     def __read_input(input):
         try:
             input_config = json.loads(input)
+            if type(input_config) == None:
+                return_error(5, "Invalid input JSON", "Cannot parse STDIN")
         except:
             return_error(5, "Invalid input JSON", "Cannot parse STDIN")
-
-        return input_config
+        else:
+            return input_config
 
 
 
@@ -165,8 +183,8 @@ class CNIRequest:
             return verb
 
     def __read_var(self, ev):
-        # Sloppy way of handling sometimes-required params
         value = os.environ.get(ev)
+        # Sloppy way of handling sometimes-required params
         if self.command == "DEL" and ev == "CNI_NETNS" and value is None:
             # Not actually required for DEL
             return None
@@ -285,7 +303,7 @@ class FreeBSDNetIf(NetIf):
                 os.system(f'ifconfig {if_name} up')
             except:
                 return_error(11, "Failed to create device",
-                        "Failed to create network device")
+                        "Failed to create network device " + if_name)
 
 
     def allocate(self):
@@ -317,7 +335,7 @@ class FreeBSDNetIf(NetIf):
                 os.system("ifconfig " + self.if_name + " destroy")
             except:
                 return_error(7, "Failed to delete device",
-                        "Failed to delete network device")
+                        "Failed to delete network device " + self.if_name)
         return True
 
 
@@ -480,7 +498,7 @@ def return_error(code, msg, details):
     return_msg = json.dumps(error_msg)
 
     print(return_msg, file=sys.stderr)
-    exit(code)
+    raise SystemExit(code)
 
 
 
