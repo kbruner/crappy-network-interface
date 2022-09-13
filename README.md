@@ -24,7 +24,6 @@ installation is Python3.9+ itself.
 
 
 ## TODO
-* Implement `DEL`
 * Implement `portmap` support
 * Implement unique IP/device number selection
 * Test the thing

@@ -6,15 +6,16 @@ Crappy Network Interface
 Very minimal Container Network Interface plugin for FreeBSD
 
 Basic usage:
-    1. ONLY reads/honors /etc/cni/net.d/10-bridge.conflist
+    1. ONLY reads/honors /etc/cni/net.d/10-bridge.conflist for ADD
+       (Does honor STDIN feed for DEL)
     2. Gets request
     3. ???
-    4. Returns value
+    4. Returns something
 
 Command notes:
     ADD - creates only, no modification supported
     CHECK - unimplemented (not required by spec)
-    DEL - not yet implemented
+    DEL - implemented
     VERSIONS - implemented
 
 Notes:
@@ -225,6 +226,29 @@ class NetIf(ABC):
     def new_ip(self):
         pass
 
+    def gen_mac_addr():
+        """
+        Generate random MAC address
+        """
+
+        hexes = [ 0x01, 0x02, 0x03,
+                random.randint(0x00, 0xff),
+                random.randint(0x00, 0xff),
+                random.randint(0x00, 0xff) ]
+        return ":".join(f"{n:02X}" for n in hexes)
+
+
+    def fix_netmask(octet_mask):
+        """
+        Convert xxx.xxx.xxx.xxx mask to /xx
+        ipaddress module only return octet format
+        """
+
+        cidr = sum([bin(int(octet)).count("1") for octet in octet_mask.split(".")])
+        return cidr
+
+
+
 class FreeBSDNetIf(NetIf):
     """
     NetIf implementation for FreeBSD systems
@@ -326,7 +350,7 @@ class FreeBSDNetIf(NetIf):
         subnet = self.cni.subnet
         subnet_cidr = ipaddress.ip_network(subnet)
         netmask = str(subnet_cidr.netmask)
-        cidr_nm = fix_netmask(netmask)
+        cidr_nm = NetIf.fix_netmask(netmask)
         cidr = f'{ip}/{cidr_nm}'
         self.ip = cidr
 
@@ -343,7 +367,7 @@ class AddResult:
         self.interfaces = [
                 {
                     "name": "eth0",
-                    "mac": gen_mac_addr(),
+                    "mac": NetIf.gen_mac_addr(),
                     "sandbox": self.request.netns
                 }
         ]
@@ -426,28 +450,6 @@ def command_version():
     exit(0)
 
 
-def return_error(code, msg, details):
-    """
-    Return the error message in format as shown at
-    https://github.com/containernetworking/cni/blob/main/SPEC.md#Error
-
-    This method makes no checks on its args
-    """
-
-    return_msg = (CNIConfig.cni_version(), code, msg, details)
-    """
-    {
-      "cniVersion": {0},
-      "code": {1},
-      "msg": {2},
-      "details": {3}
-    }
-    """
-
-    print(return_msg, file=sys.stderr)
-    exit(code)
-
-
 def host_local_add(netif):
     """
     Create the interface
@@ -465,26 +467,20 @@ def host_local_del(netif):
     return netif.delete()
 
 
-def gen_mac_addr():
+def return_error(code, msg, details):
     """
-    Generate random MAC address
-    """
+    Return the error message in format as shown at
+    https://github.com/containernetworking/cni/blob/main/SPEC.md#Error
 
-    hexes = [ 0x01, 0x02, 0x03,
-            random.randint(0x00, 0xff),
-            random.randint(0x00, 0xff),
-            random.randint(0x00, 0xff) ]
-    return ":".join(f"{n:02X}" for n in hexes)
-
-
-def fix_netmask(octet_mask):
-    """
-    Convert xxx.xxx.xxx.xxx mask to /xx
-    ipaddress module only return octet format
+    This method makes no checks on its args
     """
 
-    cidr = sum([bin(int(octet)).count("1") for octet in octet_mask.split(".")])
-    return cidr
+    error_msg = {"cniVersion": CNIConfig.cni_version(),
+            "code": code, "msg": msg, "details": details}
+    return_msg = json.dumps(error_msg)
+
+    print(return_msg, file=sys.stderr)
+    exit(code)
 
 
 
