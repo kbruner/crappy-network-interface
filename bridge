@@ -29,7 +29,6 @@ Todo (maybe?):
     * read configuration from /etc/cni/net.d (?)
     * plugins should be split out
     * no real error handling
-    * tests would be good
 
 Required parameters (CNI spec):
     CNI_COMMAND

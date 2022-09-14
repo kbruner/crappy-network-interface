@@ -26,7 +26,6 @@ installation is Python3.9+ itself.
 ## TODO
 * Implement `portmap` support
 * Implement unique IP/device number selection
-* Test the thing
 * Add Linux support?
 
 ## INSTALLATION
