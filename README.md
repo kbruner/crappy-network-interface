@@ -40,3 +40,23 @@ cp 10-bridge.conflist /etc/cni/net.d/10-bridge.conflist
 ```
 
 See `bridge` for inline comments.
+
+# Create bridge device
+
+## FreeBSD
+
+Change parameters if using a different subnet or network device
+
+1. `ifconfig bridge0 create`
+2. `ifconfig bridge0 add em0`
+3. `ifconfig bridge0 inet 172.16.0.0/24`
+4. `ifconfig bridge0 alias 172.16.0.1/32`
+5. `ifconfig bridge0 up`
+ 
+
+## Linux
+
+1. `ip link add name br0 type bridge`
+2. `ip link set dev br0 up`
+3. `ip addr add dev br0 172.16.0.1/24`
+ 

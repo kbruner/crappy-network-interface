@@ -1,19 +1,30 @@
 {
   "cniVersion": "1.0.0",
   "name": "cni",
-  "type": "bridge",
-  "bridge": "bridge0",
-  "disableCheck": true,
-  "ipam": {
-    "type": "host-local",
-    "subnet": "172.16.0.0/24",
-    "gateway": "172.16.0.1",
-    "routes": [
-      { "dst": "0.0.0.0/0" }
-    ]
-  },
-  "dns": {
-    "nameservers": ["172.16.0.1"],
-    "domain": "containerd.local"
-  }
+  "plugins": [
+    {
+      "type": "cni",
+      "bridge": "br0",
+      "isGateway": true,
+      "ipMasq": true,
+      "hairpinMode": true,
+      "ipam": {
+        "ranges": [
+          [
+            {
+              "gateway": "172.16.0.1",
+              "subnet": "172.16.0.0/24"
+            }
+          ]
+        ],
+        "routes": [
+          {
+            "dst": "0.0.0.0/0"
+          }
+        ],
+        "type": "host-local"
+      }
+    }
+  ]
 }
+

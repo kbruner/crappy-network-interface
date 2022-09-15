@@ -1,0 +1,19 @@
+{
+  "cniVersion": "1.0.0",
+  "name": "cni",
+  "plugins": [
+    {
+      "type": "cni",
+      "bridge": "br0",
+      "ipam": {
+        "type": "host-local",
+        "subnet": "172.16.0.0/24",
+        "gateway": "172.16.0.1",
+        "routes": [
+            {"dst": "0.0.0.0/0"}
+        ]
+      }
+    }
+  ]
+}
+
