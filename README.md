@@ -52,7 +52,6 @@ Change parameters if using a different subnet or network device
 3. `ifconfig bridge0 inet 172.16.0.0/24`
 4. `ifconfig bridge0 alias 172.16.0.1/32`
 5. `ifconfig bridge0 up`
- 
 
 ## Linux
 

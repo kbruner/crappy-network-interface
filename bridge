@@ -25,7 +25,7 @@ Todo (maybe?):
 Required parameters (CNI spec):
     CNI_COMMAND
     CNI_CONTAINERID
-    CNI_IFNAME -- harcoded as "eth0"
+    CNI_IFNAME
     CNI_NETNS -- Required for ADD;
                  ignored in FreeBSD, which doesn't support network namespaces
 
@@ -39,7 +39,7 @@ import ipaddress
 import json
 import os
 import platform
-import random
+from random import randint
 import re
 import subprocess
 import sys
@@ -60,6 +60,7 @@ versions_json = """
 }
 """
 
+helpme = open("/tmp/helpme", "a")
 
 #########
 # Classes
@@ -80,15 +81,17 @@ class CNIConfig:
 
     def __init__(self, input, request):
         self.input = input
+        print(input, file=helpme)
         self.request = request
         self.config = CNIConfig.__read_input(input)
         self.cni_version = CNIConfig.cni_version()
 
         if self.request.command == "ADD":
             try:
+                # Hardcoded to assume one plugin (host-local), probably bad
+                self.bridge = self.config["bridge"]
                 self.subnet = self.config["ipam"]["subnet"]
                 self.gateway = self.config["ipam"]["gateway"]
-                self.bridge = self.config["bridge"]
             except:
                 return_error(7, "Bad input",
                         "Input missing required ADD parameters")
@@ -97,13 +100,10 @@ class CNIConfig:
             self.gateway = None
             self.bridge = None
 
-        self.if_number = None
-
         if "prevResult" in self.config.keys() and self.request.command == "ADD":
             # Probably not compliant
             try:
                 self.prev_result = self.config["prevResult"]
-                self.if_number = self.config["prevResult"]["ips"][0]["interface"]
             except:
                 if self.request.command == "DEL":
                     return_error(6, "Interface missing",
@@ -162,7 +162,7 @@ class CNIRequest:
             elif ev == "CNI_CONTAINERID":
                 self.container_id = self.__read_var( ev)
             elif ev == "CNI_IFNAME":
-                self.ifname = self.__read_var(ev)
+                self.if_name = self.__read_var(ev)
             elif ev == "CNI_NETNS":
                 self.netns = self.__read_var(ev)
 
@@ -201,20 +201,32 @@ class CNIRequest:
 class NetIf(ABC):
     """
     Interface for OS-level network interface configuration
+
+    We have 3 different network devices to track:
+    1. The bridge - on the host
+    2. The virtual interface - seen from host side
+    3. The container interface - seen from inside the container
+
+    The LinkDevice subclass tracks these so we can just say something like
+    "netif.bridge_if.name" or "netif.virtual_if.mac_addr"
     """
     def __init__(self, cni, request):
         self.cni = cni
         self.request = request
-        self.bridge = self.cni.bridge
-        self.if_name = None
+        self.bridge_if = self.LinkDevice(self.cni.bridge)
+        self.container_if = self.LinkDevice(self.request.if_name)
+        self.virtual_if = self.LinkDevice()
 
-        if self.cni.if_number:
-            self.if_number = self.cni.if_number
-        else:
-            self.if_number = None
 
-        self.ip = None
-        self.mac_addr = None
+    class LinkDevice():
+        """
+        Embedded subclass, helps track the basics for multiple devices
+        """
+        def __init__(self, device=None, mac_addr=None, ip=None, sandbox=None):
+            self.device = device
+            self.mac_addr = mac_addr
+            self.ip = ip
+            self.sandbox = sandbox
 
     @abstractmethod
     def create(self):
@@ -242,9 +254,9 @@ class NetIf(ABC):
         """
 
         hexes = [ 0x01, 0x02, 0x03,
-                random.randint(0x00, 0xff),
-                random.randint(0x00, 0xff),
-                random.randint(0x00, 0xff) ]
+                randint(0x00, 0xff),
+                randint(0x00, 0xff),
+                randint(0x00, 0xff) ]
         return ":".join(f"{n:02X}" for n in hexes)
 
 
@@ -278,6 +290,7 @@ class FreeBSDNetIf(NetIf):
 
     def __init__(self, cni, request):
         super().__init__(cni, request)
+        self.bridge_if.mac_addr = FreeBSDNetId.read_mac_addr(self.request, self.bridge_if.device)
 
 
     def create(self):
@@ -292,37 +305,34 @@ class FreeBSDNetIf(NetIf):
         """
         self.allocate()
         self.new_ip()
+        self.virtual_if.mac_addr = NetIf.gen_mac_addr()
 
         if not self.request.noop:
             try:
-                bridge = self.bridge
-                if_name = self.if_name
-                ip = self.ip
-                os.system(f'ifconfig {if_name} create')
-                os.system(f'ifconfig {bridge} addm {if_name}')
-                os.system(f'ifconfig {if_name} inet {ip}')
-                os.system(f'ifconfig {if_name} up')
+                bridge = self.bridge_if.device
+                device = self.virtual_if.device
+                mac_addr = self.virtual_if.mac_addr
+                os.system(f'ifconfig {device} create')
+                os.system(f'ifconfig {device} link {mac_addr}')
+                os.system(f'ifconfig {bridge} addm {device}')
+                os.system(f'ifconfig {device} up')
             except:
                 return_error(11, "Failed to create device",
-                        "Failed to create network device " + if_name)
+                        "Failed to create network device " + device)
 
 
     def allocate(self):
         """
-        Hardcoded stub for now. Should check something stateful for unused tap
-        interface numbers
-
-        TODO: check for unused tap interfaces
+        Choose random suffix for virtual device
         """
 
-        number = 12
-        self.if_number = number
-        self.if_name = FreeBSDNetIf.interface_type + str(number)
+        ifnum = randint(0x00, 0xffffff)
+        self.container_if.device = FreeBSDNetIf.interface_type + f'{ifnum:02x}'
 
 
     def delete(self):
         """
-        Delete the tap network device
+        Delete the virtual network device
 
         No error checking here
 
@@ -333,10 +343,11 @@ class FreeBSDNetIf(NetIf):
 
         if not self.request.noop:
             try:
-                os.system("ifconfig " + self.if_name + " destroy")
+                os.system("ifconfig " + self.virtual_if.device + " destroy")
             except:
                 return_error(7, "Failed to delete device",
-                        "Failed to delete network device " + self.if_name)
+                        "Failed to delete network device " +
+                        self.virtual_if.device)
         return True
 
 
@@ -371,7 +382,7 @@ class FreeBSDNetIf(NetIf):
         netmask = str(subnet_cidr.netmask)
         cidr_nm = NetIf.fix_netmask(netmask)
         cidr = f'{ip}/{cidr_nm}'
-        self.ip = cidr
+        self.container_if.ip = cidr
 
 
 
@@ -381,62 +392,78 @@ class LinuxNetIf(NetIf):
     """
 
     # Prefix for virt network device
-    interface_type = "tap"
+    interface_type = "veth"
 
     def __init__(self, cni, request):
         super().__init__(cni, request)
+        self.bridge_if.mac_addr = LinuxNetIf.read_mac_addr(self.request, self.bridge_if.device)
 
 
     def create(self):
         """
-        Create the tap network device
+        Create the virtual network device
 
         No error checking here
         """
         self.allocate()
         self.new_ip()
+        self.container_if.mac_addr = NetIf.gen_mac_addr()
 
         if not self.request.noop:
             try:
-                bridge = self.bridge
-                if_name = self.if_name
-                ip = self.ip
-                #os.system(f'ifconfig {if_name} create')
-                #os.system(f'ifconfig {bridge} addm {if_name}')
-                #os.system(f'ifconfig {if_name} inet {ip}')
-                #os.system(f'ifconfig {if_name} up')
+                bridge_device = self.bridge_if.device
+                virtual_device = self.virtual_if.device
+                os.system(f'ip link add {virtual_device} type dummy')
+                os.system(f'ip link set dev {virtual_device} up')
+                self.virtual_if.mac_addr = LinuxNetIf.read_mac_addr(self.request, self.virtual_if.device)
             except:
                 return_error(11, "Failed to create device",
-                        "Failed to create network device " + if_name)
-
+                        "Failed to create network device " + virtual_device)
 
     def allocate(self):
         """
-        Hardcoded stub for now. Should check something stateful for unused tap
-        interface numbers
-
-        TODO: check for unused tap interfaces
+        Choose random suffix for virtual device
         """
 
-        number = 1
-        self.if_number = number
-        self.if_name = LinuxNetIf.interface_type + str(number)
+        ifnum = randint(0x00, 0xffffff)
+        self.virtual_if.device = LinuxNetIf.interface_type + f'{ifnum:02x}'
 
 
     def delete(self):
         """
-        Delete the tap network device
+        Delete the virtual network device
 
         No error checking here
         """
 
+        print("does this work", file=helpme)
+        self.update_virtual_if()
+
         if not self.request.noop:
             try:
-                os.system("ifconfig " + self.if_name + " destroy")
+                print("delete device time", file=helpme)
+                device = self.virtual_if.device
+                print("device to del " + device, file=helpme)
+                os.system(f'ip link set dev {device} down')
+                os.system(f'ip link delete {device}')
             except:
+                print("failed device to del ", file=helpme)
                 return_error(7, "Failed to delete device",
-                        "Failed to delete network device " + self.if_name)
+                        "Failed to delete network device " + self.device)
         return True
+
+
+    def update_virtual_if(self):
+        print("am I here", file=helpme)
+        try:
+            for iface in self.config["prevResult"]["interfaces"]:
+                if iface["name"].startswith(LinuxNetIf.interface_prefix):
+                    self.virtual_if.device = iface["name"]
+        except:
+            print("WTAF", file=helpme)
+            return_error(7, "Failed to delete device",
+                    "Failed to delete network device")
+
 
 
     def read_mac_addr(request, device):
@@ -445,18 +472,18 @@ class LinuxNetIf(NetIf):
         """
         if not request.noop:
             try:
-                ifconfig = subprocess.run(["ifconfig", device],
+                ifconfig = subprocess.run(["ip", "-br", "link", "show", device],
                         stdout=subprocess.PIPE)
                 ifout = ifconfig.stdout.decode("UTF-8")
-
-                em = re.compile(r"ether\s+(..:..:..:..:..:..)")
-                m = em.search(ifout)
+                return ifout.split()[2]
             except:
                 return 1
 
 
     def new_ip(self):
         """
+        Assign IP to the container interface
+
         Hardcoded stub for now. Should check something stateful for unused IPs
         in subnet range
 
@@ -470,45 +497,56 @@ class LinuxNetIf(NetIf):
         netmask = str(subnet_cidr.netmask)
         cidr_nm = NetIf.fix_netmask(netmask)
         cidr = f'{ip}/{cidr_nm}'
-        self.ip = cidr
-
+        self.container_if.ip = cidr
+        return cidr
 
 
 class AddResult:
     """
     Holds structure for ADD command results
     """
-    def __init__(self, cni, request):
+    def __init__(self, cni, request, netif):
         self.cni_version = CNIConfig.cni_version()
         self.cni = cni
         self.request = request
-        self.interfaces = [
-                {
-                    "name": "eth0",
-                    "mac": NetIf.gen_mac_addr(),
-                    "sandbox": self.request.netns
-                }
-        ]
+        self.netif = netif
+
+        self.interfaces = []
+
         self.ips = [
                 {
                     "version": "4",
-                    "gateway": self.cni.gateway
+                    "gateway": self.cni.gateway,
+                    "interface": 0,
                 }
         ]
 
+    def set_if_result(self, device):
+        result = {}
 
-    def set_address(self, address):
-        self.ips[0]["address"] = address
+        if device.ip is not None:
+            result["ip"] = device.ip
 
-    def set_interface(self, interface):
-        self.ips[0]["interface"] = interface
+        if device.mac_addr is not None:
+            result["mac_addr"] = device.mac_addr
+
+        if device.device is not None:
+            result["name"] = device.device
+
+        self.interfaces.append(result)
 
     def json_output(self):
+        self.set_if_result(self.netif.bridge_if)
+        self.set_if_result(self.netif.container_if)
+        self.set_if_result(self.netif.virtual_if)
+        self.ips[0]["address"] = self.netif.container_if.ip
+
         result = {
                 "cniVersion": self.cni_version,
                 "interfaces": self.interfaces,
                 "ips": self.ips
                 }
+        print(json.dumps(result), file=helpme)
         return json.dumps(result)
 
 
@@ -522,13 +560,10 @@ def command_add(cni, request):
     CNI ADD verb
     """
 
-    result = AddResult(cni, request)
     netif = NetIf.create_netif(cni, request)
-    ip, if_number = host_local_add(netif)
-    result.set_address(ip)
-    result.set_interface(if_number)
+    result = AddResult(cni, request, netif)
+    host_local_add(netif)
 
-    print(result.json_output(), file=sys.stderr)
     print(result.json_output())
     exit(0)
 
@@ -539,8 +574,10 @@ def command_del(cni, request):
     """
 
     # Should only return 0 as errors shouldn't bubble up but *shrug*
+    print("UGH", file=helpme)
     netif = NetIf.create_netif(cni, request)
     code = host_local_del(netif)
+    print("WHAT", file=helpme)
     if code:
         exit(0)
     else:
@@ -575,7 +612,6 @@ def host_local_add(netif):
     """
 
     netif.create()
-    return netif.ip, netif.if_number
 
 
 def host_local_del(netif):

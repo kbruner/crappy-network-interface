@@ -1,25 +1,42 @@
 {
-  "name": "cni",
-  "type": "cni",
-  "bridge": "br0",
-  "isGateway": true,
   "cniVersion": "1.0.0",
-  "hairpinMode": true,
-  "ipMasq": true,
-  "ipam": {
-    "ranges": [
-      [
+  "name": "dbnet",
+  "type": "portmap",
+  "runtimeConfig": {
+    "portMappings" : [
+      { "hostPort": 8080, "containerPort": 80, "protocol": "tcp" }
+    ]
+  },
+  "prevResult": {
+    "ips": [
         {
-          "gateway": "172.16.0.1",
-          "subnet": "172.16.0.0/24"
+          "address": "10.1.0.5/16",
+          "gateway": "10.1.0.1",
+          "interface": 2
         }
-      ]
     ],
     "routes": [
       {
         "dst": "0.0.0.0/0"
       }
     ],
-    "type": "host-local"
+    "interfaces": [
+        {
+            "name": "cni0",
+            "mac": "00:11:22:33:44:55"
+        },
+        {
+            "name": "veth3243",
+            "mac": "55:44:33:22:11:11"
+        },
+        {
+            "name": "eth0",
+            "mac": "00:11:22:33:44:66",
+            "sandbox": "/var/run/netns/blue"
+        }
+    ],
+    "dns": {
+      "nameservers": [ "10.1.0.1" ]
+    }
   }
 }

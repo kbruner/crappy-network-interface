@@ -202,8 +202,9 @@ class TestAddResult(unittest.TestCase):
         cni = CNIConfig(input, request)
         netif = FreeBSDNetIf(cni, request)
 
-        result = AddResult(cni, request)
+        result = AddResult(cni, request, netif)
         result.set_address(netif.ip)
+        result.set_mac_addr(netif.mac_addr)
         result.set_interface(netif.if_number)
 
         output = result.json_output()
