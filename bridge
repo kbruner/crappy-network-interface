@@ -26,8 +26,7 @@ Required parameters (CNI spec):
     CNI_COMMAND
     CNI_CONTAINERID
     CNI_IFNAME
-    CNI_NETNS -- Required for ADD;
-                 ignored in FreeBSD, which doesn't support network namespaces
+    CNI_NETNS -- Required for ADD
 
 We ignore the following parameters:
     CNI_ARGS
@@ -51,7 +50,7 @@ import sys
 
 # Supported versions
 # Pretty sure this plugin doesn"t actually support all these versions
-versions_json = """
+VERSIONS_JSON = """
 {
     "cniVersion": "1.0.0",
     "supportedVersions": [
@@ -60,7 +59,6 @@ versions_json = """
 }
 """
 
-helpme = open("/tmp/helpme", "a")
 
 #########
 # Classes
@@ -70,7 +68,7 @@ class CNIConfig:
     """
     Methods for reading CNI config values
 
-    Probably should read this from /etc/cni/etc.d and parse the plugin input
+    Probably should read this from /etc/cni/etc.d and parse the plugin stdinput
     separately
 
     Reusing class for ADD (which seems like it should match /etc/cni/etc.d
@@ -79,12 +77,12 @@ class CNIConfig:
     prevResult should really be handled as a subclass/separate object
     """
 
-    def __init__(self, input, request):
-        self.input = input
-        print(input, file=helpme)
+    def __init__(self, stdinput, request):
+        self.stdinput = stdinput
+        # delete me
         self.request = request
-        self.config = CNIConfig.__read_input(input)
-        self.cni_version = CNIConfig.cni_version()
+        self.config = self.__read_input(stdinput)
+        self.cni_version = CNIConfig.read_cni_version()
 
         if self.request.command == "ADD":
             try:
@@ -110,7 +108,7 @@ class CNIConfig:
                         "Cannot read interface field in prevResult")
         elif "prevResult" not in self.config and self.request.command == "DEL":
             # requires prevResult
-             return_error(6, "prevResult missing in input",
+            return_error(6, "prevResult missing in input",
                    "prevResult is not in input json")
 
         elif "prevResult" in self.config:
@@ -119,18 +117,26 @@ class CNIConfig:
         else:
             self.prev_result = None
 
-
-    def cni_version():
-        versions = json.loads(versions_json)
+    @staticmethod
+    def read_cni_version():
+        """
+        Read CNI version json to get default
+        """
+        versions = json.loads(VERSIONS_JSON)
         return versions["cniVersion"]
 
-    def __read_input(input):
+    def __read_input(self, stdinput):
+        """
+        Parse data from stdin
+        """
         try:
-            input_config = json.loads(input)
-            if type(input_config) == None:
+            input_config = json.loads(stdinput)
+            if input_config is None:
                 return_error(5, "Invalid input JSON", "Cannot parse STDIN")
+                return 5
         except:
             return_error(5, "Invalid input JSON", "Cannot parse STDIN")
+            return 5
         else:
             return input_config
 
@@ -155,47 +161,50 @@ class CNIRequest:
     verbs = ["ADD", "DEL", "CHECK", "VERSION"]
 
     def __init__(self):
-        self.noop = CNIRequest.noop()
-        for ev in CNIRequest.env_vars:
-            if ev == "CNI_COMMAND":
+        self.noop = CNIRequest.get_noop()
+        for evar in CNIRequest.env_vars:
+            if evar == "CNI_COMMAND":
                 self.command = self.__verb()
-            elif ev == "CNI_CONTAINERID":
-                self.container_id = self.__read_var( ev)
-            elif ev == "CNI_IFNAME":
-                self.if_name = self.__read_var(ev)
-            elif ev == "CNI_NETNS":
-                self.netns = self.__read_var(ev)
+            elif evar == "CNI_CONTAINERID":
+                self.container_id = self.__read_var(evar)
+            elif evar == "CNI_IFNAME":
+                self.if_name = self.__read_var(evar)
+            elif evar == "CNI_NETNS":
+                self.netns = self.__read_var(evar)
 
     def __verb(self):
         verb = os.environ.get("CNI_COMMAND")
         if verb is None or verb not in CNIRequest.verbs:
             return_error(4, "Invalid CNI_COMMAND",
                 "CNI_COMMAND must be one of " + ", ".join(CNIRequest.verbs))
-        else:
-            return verb
+            return 4
+        return verb
 
-    def __read_var(self, ev):
-        value = os.environ.get(ev)
+    def __read_var(self, evar):
+        value = os.environ.get(evar)
         # Sloppy way of handling sometimes-required params
-        if self.command == "DEL" and ev == "CNI_NETNS" and value is None:
+        if self.command == "DEL" and evar == "CNI_NETNS" and value is None:
             # Not actually required for DEL
             return None
-        elif value is None:
-            # Required for ADD and CHECK
-            return_error(4, ev + " invalid", ev + " parameter invalid")
-        else:
-            return value
 
-    def noop():
+        if value is None:
+            # Required for ADD and CHECK
+            return_error(4, evar + " invalid", evar + " parameter invalid")
+            return 4
+
+        return value
+
+    @staticmethod
+    def get_noop():
         """
         If True, do not execute ifconfig/ip commands
         """
 
         v = os.environ.get("NOOP")
-        if v == "true" or v == "True":
+        if v in ("true", "True"):
             return True
-        else:
-            return False
+
+        return False
 
 
 class NetIf(ABC):
@@ -216,7 +225,6 @@ class NetIf(ABC):
         self.bridge_if = self.LinkDevice(self.cni.bridge)
         self.container_if = self.LinkDevice(self.request.if_name)
         self.virtual_if = self.LinkDevice()
-
 
     class LinkDevice():
         """
@@ -241,6 +249,7 @@ class NetIf(ABC):
         pass
 
     @abstractmethod
+    @staticmethod
     def read_mac_addr(request, device):
         pass
 
@@ -248,6 +257,7 @@ class NetIf(ABC):
     def new_ip(self):
         pass
 
+    @staticmethod
     def gen_mac_addr():
         """
         Generate random MAC address
@@ -260,6 +270,7 @@ class NetIf(ABC):
         return ":".join(f"{n:02X}" for n in hexes)
 
 
+    @staticmethod
     def fix_netmask(octet_mask):
         """
         Convert xxx.xxx.xxx.xxx mask to /xx
@@ -269,14 +280,20 @@ class NetIf(ABC):
         cidr = sum([bin(int(octet)).count("1") for octet in octet_mask.split(".")])
         return cidr
 
+    @staticmethod
     def create_netif(cni, request):
-        os = platform.system()
-        if os == "Linux":
+        """
+        Select NetIf implementation based on OS
+        """
+        osname = platform.system()
+        if osname == "Linux":
             return LinuxNetIf(cni, request)
-        elif os == "FreeBSD":
+
+        if osname == "FreeBSD":
             return FreeBSDNetIf(cni, request)
-        else:
-            return_error(100, "OS unsupported", os + " is not supported")
+
+        return_error(100, "OS unsupported", osname + " is not supported")
+        return None
 
 
 
@@ -350,21 +367,23 @@ class FreeBSDNetIf(NetIf):
                         self.virtual_if.device)
         return True
 
-
+    @staticmethod
     def read_mac_addr(request, device):
         """
         Parse device MAC address from ifconfig output
         """
-        if not request.noop:
-            try:
-                ifconfig = subprocess.run(["ifconfig", device],
-                        stdout=subprocess.PIPE)
-                ifout = ifconfig.stdout.decode("UTF-8")
+        if request.noop:
+            return "aa:aa:aa:aa:aa:aa"
 
-                em = re.compile(r"ether\s+(..:..:..:..:..:..)")
-                m = em.search(ifout)
-            except:
-                return 1
+        try:
+            ifconfig = subprocess.run(["ifconfig", device],
+                    stdout=subprocess.PIPE, check=False)
+            ifout = ifconfig.stdout.decode("UTF-8")
+
+            ematch = re.compile(r"ether\s+(..:..:..:..:..:..)")
+            return ematch.search(ifout)
+        except:
+            return None
 
 
     def new_ip(self):
@@ -376,12 +395,12 @@ class FreeBSDNetIf(NetIf):
         """
 
         # hardcode for now
-        ip = "172.16.0.12"
+        ipaddr = "172.16.0.12"
         subnet = self.cni.subnet
         subnet_cidr = ipaddress.ip_network(subnet)
         netmask = str(subnet_cidr.netmask)
         cidr_nm = NetIf.fix_netmask(netmask)
-        cidr = f'{ip}/{cidr_nm}'
+        cidr = f'{ipaddr}/{cidr_nm}'
         self.container_if.ip = cidr
 
 
@@ -409,13 +428,38 @@ class LinuxNetIf(NetIf):
         self.new_ip()
         self.container_if.mac_addr = NetIf.gen_mac_addr()
 
+
         if not self.request.noop:
             try:
                 bridge_device = self.bridge_if.device
                 virtual_device = self.virtual_if.device
-                os.system(f'ip link add {virtual_device} type dummy')
+                container_device = self.container_if.device
+                container_id = self.request.container_id
+                container_ip = self.container_if.ip
+                gateway = self.cni.gateway
+                netns = self.request.netns
+
+
+                os.system(f'ip link add {container_device} type veth \
+                        peer name {virtual_device}')
                 os.system(f'ip link set dev {virtual_device} up')
-                self.virtual_if.mac_addr = LinuxNetIf.read_mac_addr(self.request, self.virtual_if.device)
+                os.system(f'ip link set dev {virtual_device} \
+                        master {bridge_device}')
+                os.system(f'ip netns add {container_id}')
+                os.system(f'ip link set {container_device} \
+                        netns {container_id}')
+                os.system(f'ln -sfT {netns} /var/run/netns/{container_id}')
+                os.system(f'ip netns exec {container_id} ip link \
+                        set {container_device} up')
+                os.system(f'ip netns exec {container_id} ip addr add \
+                        {container_ip} size dev {container_device}')
+                os.system(f'ip netns exec {container_id} ip route \
+                        add default via {gateway} dev {container_device}')
+
+                self.container_if.mac_addr = self.read_netns_mac_addr()
+                self.virtual_if.mac_addr = \
+                        LinuxNetIf.read_mac_addr(self.request, \
+                        self.virtual_if.device)
             except:
                 return_error(11, "Failed to create device",
                         "Failed to create network device " + virtual_device)
@@ -436,36 +480,36 @@ class LinuxNetIf(NetIf):
         No error checking here
         """
 
-        print("does this work", file=helpme)
         self.update_virtual_if()
 
-        if not self.request.noop:
-            try:
-                print("delete device time", file=helpme)
-                device = self.virtual_if.device
-                print("device to del " + device, file=helpme)
-                os.system(f'ip link set dev {device} down')
-                os.system(f'ip link delete {device}')
-            except:
-                print("failed device to del ", file=helpme)
-                return_error(7, "Failed to delete device",
-                        "Failed to delete network device " + self.device)
+        if self.request.noop:
+            return True
+
+        device = self.virtual_if.device
+
+        try:
+            os.system(f'ip link set dev {device} down')
+            os.system(f'ip link delete {device}')
+        except:
+            return_error(7, "Failed to delete device",
+                    "Failed to delete network device " + device)
         return True
 
 
     def update_virtual_if(self):
-        print("am I here", file=helpme)
+        """
+        Fill in self.virtual_if structure
+        """
         try:
-            for iface in self.config["prevResult"]["interfaces"]:
-                if iface["name"].startswith(LinuxNetIf.interface_prefix):
+            for iface in self.cni.prev_result["interfaces"]:
+                if iface["name"].startswith(LinuxNetIf.interface_type):
                     self.virtual_if.device = iface["name"]
         except:
-            print("WTAF", file=helpme)
             return_error(7, "Failed to delete device",
                     "Failed to delete network device")
 
 
-
+    @staticmethod
     def read_mac_addr(request, device):
         """
         Parse device MAC address from ifconfig output
@@ -473,11 +517,34 @@ class LinuxNetIf(NetIf):
         if not request.noop:
             try:
                 ifconfig = subprocess.run(["ip", "-br", "link", "show", device],
-                        stdout=subprocess.PIPE)
+                        stdout=subprocess.PIPE, check=False)
                 ifout = ifconfig.stdout.decode("UTF-8")
                 return ifout.split()[2]
             except:
                 return 1
+        else:
+            return 0
+
+
+    def read_netns_mac_addr(self):
+        """
+        Parse device container mac address from ip output
+        """
+        if self.request.noop:
+            return "aa:aa:aa:aa:aa:aa"
+
+        try:
+            container_id = self.request.container_id
+            container_device = self.container_if.device
+            ifconfig = subprocess.run(["ip", "netns", "exec", \
+                    container_id, "ip", "link", "show", container_device],
+                    stdout=subprocess.PIPE, check=False)
+            ifout = ifconfig.stdout.decode("UTF-8")
+            return ifout.split()[2]
+        except:
+            #return_error(11, "Failed to read mac addr device",
+            #        "Failed to create network device")
+            return None
 
 
     def new_ip(self):
@@ -491,12 +558,12 @@ class LinuxNetIf(NetIf):
         """
 
         # hardcode for now
-        ip = "172.16.0.123"
+        ipaddr = "172.16.0.123"
         subnet = self.cni.subnet
         subnet_cidr = ipaddress.ip_network(subnet)
         netmask = str(subnet_cidr.netmask)
         cidr_nm = NetIf.fix_netmask(netmask)
-        cidr = f'{ip}/{cidr_nm}'
+        cidr = f'{ipaddr}/{cidr_nm}'
         self.container_if.ip = cidr
         return cidr
 
@@ -506,7 +573,7 @@ class AddResult:
     Holds structure for ADD command results
     """
     def __init__(self, cni, request, netif):
-        self.cni_version = CNIConfig.cni_version()
+        self.cni_version = CNIConfig.read_cni_version()
         self.cni = cni
         self.request = request
         self.netif = netif
@@ -522,6 +589,9 @@ class AddResult:
         ]
 
     def set_if_result(self, device):
+        """
+        Fill missing device class vars
+        """
         result = {}
 
         if device.ip is not None:
@@ -536,6 +606,9 @@ class AddResult:
         self.interfaces.append(result)
 
     def json_output(self):
+        """
+        ADD result CNI output
+        """
         self.set_if_result(self.netif.bridge_if)
         self.set_if_result(self.netif.container_if)
         self.set_if_result(self.netif.virtual_if)
@@ -546,7 +619,6 @@ class AddResult:
                 "interfaces": self.interfaces,
                 "ips": self.ips
                 }
-        print(json.dumps(result), file=helpme)
         return json.dumps(result)
 
 
@@ -565,7 +637,7 @@ def command_add(cni, request):
     host_local_add(netif)
 
     print(result.json_output())
-    exit(0)
+    sys.exit(0)
 
 
 def command_del(cni, request):
@@ -574,17 +646,15 @@ def command_del(cni, request):
     """
 
     # Should only return 0 as errors shouldn't bubble up but *shrug*
-    print("UGH", file=helpme)
     netif = NetIf.create_netif(cni, request)
     code = host_local_del(netif)
-    print("WHAT", file=helpme)
     if code:
-        exit(0)
+        sys.exit(0)
     else:
-        exit(1)
+        sys.exit(1)
 
 
-def command_check(cni, request):
+def command_check():
     """
     CNI CHECK verb
 
@@ -594,7 +664,7 @@ def command_check(cni, request):
     """
 
     print("Not implemented; CHECK disabled")
-    exit(0)
+    sys.exit(0)
 
 
 def command_version():
@@ -602,8 +672,8 @@ def command_version():
     CNI VERSION verb
     """
 
-    print(versions_json)
-    exit(0)
+    print(VERSIONS_JSON)
+    sys.exit(0)
 
 
 def host_local_add(netif):
@@ -630,7 +700,7 @@ def return_error(code, msg, details):
     This method makes no checks on its args
     """
 
-    error_msg = {"cniVersion": CNIConfig.cni_version(),
+    error_msg = {"cniVersion": CNIConfig.read_cni_version(),
             "code": code, "msg": msg, "details": details}
     return_msg = json.dumps(error_msg)
 
@@ -640,10 +710,12 @@ def return_error(code, msg, details):
 
 
 def main():
+    """
+    Main
+    """
     request = CNIRequest()
 
     input_json = "".join(sys.stdin.readlines())
-    # TODO validate passed config against /etc/cni/net.d conf(s)
     plugin = CNIConfig(input_json, request)
 
     if request.command == "ADD":
@@ -651,7 +723,7 @@ def main():
     elif request.command == "DEL":
         command_del(plugin, request)
     elif request.command == "CHECK":
-        command_check(plugin, request)
+        command_check()
     elif request.command == "VERSION":
         command_version()
 
@@ -659,4 +731,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
