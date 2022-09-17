@@ -20,17 +20,17 @@ Notes:
 
 Todo (maybe?):
     * plugins should be split out
-    * no real error handling
+    * minimal error handling
 
 Required parameters (CNI spec):
     CNI_COMMAND
     CNI_CONTAINERID
     CNI_IFNAME
-    CNI_NETNS -- Required for ADD
+    CNI_NETNS -- Required for ADD, not for DEL
 
 We ignore the following parameters:
     CNI_ARGS
-    CNI_PATH -- using /opt/cni/bin
+    CNI_PATH
 """
 
 from abc import ABC, abstractmethod
@@ -44,6 +44,7 @@ import subprocess
 import sys
 
 
+
 ###############
 # Global var(s)
 ###############
@@ -52,12 +53,14 @@ import sys
 # Pretty sure this plugin doesn"t actually support all these versions
 VERSIONS_JSON = """
 {
-    "cniVersion": "1.0.0",
+    "cniVersion": "0.4.0",
     "supportedVersions": [
         "0.3.1", "0.4.0", "1.0.0"
     ]
 }
 """
+
+NETNS_PATH = "/var/run/netns/"
 
 
 #########
@@ -79,7 +82,6 @@ class CNIConfig:
 
     def __init__(self, stdinput, request):
         self.stdinput = stdinput
-        # delete me
         self.request = request
         self.config = self.__read_input(stdinput)
         self.cni_version = CNIConfig.read_cni_version()
@@ -192,6 +194,7 @@ class CNIRequest:
             return_error(4, evar + " invalid", evar + " parameter invalid")
             return 4
 
+
         return value
 
     @staticmethod
@@ -223,7 +226,8 @@ class NetIf(ABC):
         self.cni = cni
         self.request = request
         self.bridge_if = self.LinkDevice(self.cni.bridge)
-        self.container_if = self.LinkDevice(self.request.if_name)
+        self.container_if = self.LinkDevice(self.request.if_name, None, None,
+                NETNS_PATH + request.container_id)
         self.virtual_if = self.LinkDevice()
 
     class LinkDevice():
@@ -249,7 +253,6 @@ class NetIf(ABC):
         pass
 
     @abstractmethod
-    @staticmethod
     def read_mac_addr(request, device):
         pass
 
@@ -439,20 +442,21 @@ class LinuxNetIf(NetIf):
                 gateway = self.cni.gateway
                 netns = self.request.netns
 
-
                 os.system(f'ip link add {container_device} type veth \
                         peer name {virtual_device}')
                 os.system(f'ip link set dev {virtual_device} up')
                 os.system(f'ip link set dev {virtual_device} \
                         master {bridge_device}')
+                os.system(f'ln -sfT {netns} /var/run/netns/{container_id}')
                 os.system(f'ip netns add {container_id}')
                 os.system(f'ip link set {container_device} \
                         netns {container_id}')
-                os.system(f'ln -sfT {netns} /var/run/netns/{container_id}')
                 os.system(f'ip netns exec {container_id} ip link \
                         set {container_device} up')
                 os.system(f'ip netns exec {container_id} ip addr add \
-                        {container_ip} size dev {container_device}')
+                        {container_ip} dev {container_device}')
+                os.system(f'ip netns exec {container_id} ip route \
+                        add {gateway} dev {container_device}')
                 os.system(f'ip netns exec {container_id} ip route \
                         add default via {gateway} dev {container_device}')
 
@@ -486,10 +490,12 @@ class LinuxNetIf(NetIf):
             return True
 
         device = self.virtual_if.device
+        container = self.request.container_id
 
         try:
             os.system(f'ip link set dev {device} down')
             os.system(f'ip link delete {device}')
+            os.system(f'ip netns delete {container}')
         except:
             return_error(7, "Failed to delete device",
                     "Failed to delete network device " + device)
@@ -537,7 +543,7 @@ class LinuxNetIf(NetIf):
             container_id = self.request.container_id
             container_device = self.container_if.device
             ifconfig = subprocess.run(["ip", "netns", "exec", \
-                    container_id, "ip", "link", "show", container_device],
+                    container_id, "ip", "-br", "link", "show", container_device],
                     stdout=subprocess.PIPE, check=False)
             ifout = ifconfig.stdout.decode("UTF-8")
             return ifout.split()[2]
@@ -584,7 +590,7 @@ class AddResult:
                 {
                     "version": "4",
                     "gateway": self.cni.gateway,
-                    "interface": 0,
+                    "interface": 2,
                 }
         ]
 
@@ -594,14 +600,17 @@ class AddResult:
         """
         result = {}
 
-        if device.ip is not None:
-            result["ip"] = device.ip
+        #if device.ip is not None:
+        #    result["ip"] = device.ip
 
         if device.mac_addr is not None:
-            result["mac_addr"] = device.mac_addr
+            result["mac"] = device.mac_addr
 
         if device.device is not None:
             result["name"] = device.device
+
+        if device.sandbox is not None:
+            result["sandbox"] = device.sandbox
 
         self.interfaces.append(result)
 
@@ -610,14 +619,19 @@ class AddResult:
         ADD result CNI output
         """
         self.set_if_result(self.netif.bridge_if)
-        self.set_if_result(self.netif.container_if)
         self.set_if_result(self.netif.virtual_if)
+        self.set_if_result(self.netif.container_if)
         self.ips[0]["address"] = self.netif.container_if.ip
+        if "dns" in self.cni.config:
+            dns = self.cni.config["dns"]
+        else:
+            dns = {}
 
         result = {
                 "cniVersion": self.cni_version,
                 "interfaces": self.interfaces,
-                "ips": self.ips
+                "ips": self.ips,
+                "dns": dns
                 }
         return json.dumps(result)
 
@@ -716,12 +730,12 @@ def main():
     request = CNIRequest()
 
     input_json = "".join(sys.stdin.readlines())
-    plugin = CNIConfig(input_json, request)
+    config = CNIConfig(input_json, request)
 
     if request.command == "ADD":
-        command_add(plugin, request)
+        command_add(config, request)
     elif request.command == "DEL":
-        command_del(plugin, request)
+        command_del(config, request)
     elif request.command == "CHECK":
         command_check()
     elif request.command == "VERSION":

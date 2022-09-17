@@ -1,16 +1,15 @@
 # Crappy Network Interface
 
-WIP
-
-
 A very non-compliant implementation of the [Container Network
 Interface](https://www.cni.dev/)
-[spec](https://www.cni.dev/plugins/current/ipam/static/) for use with the very
-experimental FreeBSD containerd, particularly with use with Linux containers
-running in emulation mode of FreeBSD. Implemented in python.
+[spec](https://www.cni.dev/plugins/current/ipam/static/)
 
-NOTE: Upstream hooks in `runj` and `containerd` for FreeBSD support are still
-WIP, so this plugin is just a PoC/personal project.
+(Basically) works on Linux with `runc` and `containerd`.
+
+Originally this was for use with the very experimental FreeBSD containerd,
+particularly with use with Linux containers running in emulation mode on
+FreeBSD. However, upstream hooks in `runj` and `containerd` for FreeBSD
+support are still WIP, so this plugin is just a PoC/personal project.
 
 For some background, see [this
 post](https://productionwithscissors.run/2022/09/04/containerd-linux-on-freebsd/)
@@ -22,40 +21,47 @@ installation requirements and steps. Deliberately uses no non-standard Python
 modules and inline custom Classes so the only external dependency to
 installation is Python3.9+ itself.
 
+# TODO
 
-## TODO
-* Implement `portmap` support
-* Implement unique IP/device number selection
-* Add Linux support?
+* Implement unique IP selection (oops)
+* Implement `portmap` support?
+* (update tests)
+* (link)
 
-## INSTALLATION
-* Requirement: Python version >= 3.9. On FreeBSD, you may need to create the
-  symbolic link from `python3.x` to `python3`
-* BACK UP EXISTING FILES FIRST!
+# Setup
 
-```
-mkdir -p /opt/cni/bin /etc/cni/net.d
-cp bridge /opt/cni/bin/bridge
-cp 10-bridge.conflist /etc/cni/net.d/10-bridge.conflist
-```
-
-See `bridge` for inline comments.
-
-# Create bridge device
-
-## FreeBSD
+**Note**: This is totally insecure and broken. Do not do any of this! **USE AT
+YOUR OWN RISK**
 
 Change parameters if using a different subnet or network device
 
-1. `ifconfig bridge0 create`
-2. `ifconfig bridge0 add em0`
-3. `ifconfig bridge0 inet 172.16.0.0/24`
-4. `ifconfig bridge0 alias 172.16.0.1/32`
-5. `ifconfig bridge0 up`
+## Installation
+* Requirement: Python version >= 3.9 as `python3`
+* BACK UP EXISTING FILES FIRST!
 
-## Linux
+On Linux:
+```
+mkdir -p /opt/cni/bin /etc/cni/net.d
+cp cni /opt/cni/bin/cni
+cp 10-cni-linux.conflist /etc/cni/net.d/10-cni.conflist
+```
+
+## System setup
+
+### Create the bridge device
 
 1. `ip link add name br0 type bridge`
 2. `ip link set dev br0 up`
 3. `ip addr add dev br0 172.16.0.1/24`
- 
+
+### Share hosts's `systemd-resolved` DNS resolver with bridged containers
+
+1. Add `DNSStubListenerExtra=172.16.0.1` to /etc/systemd/resolved.conf
+2. `systemctl restart resolved`
+
+`runc` ignores the CNI dns param, so to use the bridged resolved, pass
+`--dns 172.16.0.1` to `nerdctl run` (or `docker run`, you do you)
+
+### Add NAT to read the Internet from bridged network
+
+TBD
