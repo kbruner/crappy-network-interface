@@ -26,7 +26,7 @@ post](https://productionwithscissors.run/2022/09/04/containerd-linux-on-freebsd/
 * Implement unique IP selection (oops)
 * Implement `portmap` support?
 * (update tests)
-* (link)
+* (lint)
 
 ## Warning!
 
@@ -66,3 +66,10 @@ cp 10-cni-linux.conflist /etc/cni/net.d/10-cni.conflist
 ### Add NAT to read the Internet from bridged network
 
 TBD
+
+
+## References
+* https://www.cni.dev/docs/spec/
+* https://karampok.me/posts/container-networking-with-cni/
+* https://github.com/s-matyukevich/bash-cni-plugin
+* https://andreaskaris.github.io/blog/openshift/analyzing-cni/
