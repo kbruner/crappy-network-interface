@@ -3,7 +3,7 @@
 """
 Crappy Network Interface
 
-Very minimal Container Network Interface plugin for FreeBSD
+Very minimal Container Network Interface plugin
 
 Command notes:
     ADD - creates only, no modification supported
@@ -108,6 +108,7 @@ class CNIConfig:
                 if self.request.command == "DEL":
                     return_error(6, "Interface missing",
                         "Cannot read interface field in prevResult")
+
         elif "prevResult" not in self.config and self.request.command == "DEL":
             # requires prevResult
             return_error(6, "prevResult missing in input",
@@ -119,6 +120,7 @@ class CNIConfig:
         else:
             self.prev_result = None
 
+
     @staticmethod
     def read_cni_version():
         """
@@ -126,6 +128,7 @@ class CNIConfig:
         """
         versions = json.loads(VERSIONS_JSON)
         return versions["cniVersion"]
+
 
     def __read_input(self, stdinput):
         """
@@ -174,6 +177,7 @@ class CNIRequest:
             elif evar == "CNI_NETNS":
                 self.netns = self.__read_var(evar)
 
+
     def __verb(self):
         verb = os.environ.get("CNI_COMMAND")
         if verb is None or verb not in CNIRequest.verbs:
@@ -181,6 +185,7 @@ class CNIRequest:
                 "CNI_COMMAND must be one of " + ", ".join(CNIRequest.verbs))
             return 4
         return verb
+
 
     def __read_var(self, evar):
         value = os.environ.get(evar)
@@ -193,9 +198,8 @@ class CNIRequest:
             # Required for ADD and CHECK
             return_error(4, evar + " invalid", evar + " parameter invalid")
             return 4
-
-
         return value
+
 
     @staticmethod
     def get_noop():
@@ -203,8 +207,8 @@ class CNIRequest:
         If True, do not execute ifconfig/ip commands
         """
 
-        v = os.environ.get("NOOP")
-        if v in ("true", "True"):
+        val = os.environ.get("NOOP")
+        if val in ("true", "True"):
             return True
 
         return False
@@ -220,8 +224,9 @@ class NetIf(ABC):
     3. The container interface - seen from inside the container
 
     The LinkDevice subclass tracks these so we can just say something like
-    "netif.bridge_if.name" or "netif.virtual_if.mac_addr"
+    "netif.bridge_if.device" or "netif.virtual_if.mac"
     """
+
     def __init__(self, cni, request):
         self.cni = cni
         self.request = request
@@ -230,15 +235,17 @@ class NetIf(ABC):
                 NETNS_PATH + request.container_id)
         self.virtual_if = self.LinkDevice()
 
+
     class LinkDevice():
         """
         Embedded subclass, helps track the basics for multiple devices
         """
-        def __init__(self, device=None, mac_addr=None, ip=None, sandbox=None):
+        def __init__(self, device=None, mac=None, ip=None, sandbox=None):
             self.device = device
-            self.mac_addr = mac_addr
+            self.mac = mac
             self.ip = ip
             self.sandbox = sandbox
+
 
     @abstractmethod
     def create(self):
@@ -283,6 +290,7 @@ class NetIf(ABC):
         cidr = sum([bin(int(octet)).count("1") for octet in octet_mask.split(".")])
         return cidr
 
+
     @staticmethod
     def create_netif(cni, request):
         """
@@ -303,6 +311,8 @@ class NetIf(ABC):
 class FreeBSDNetIf(NetIf):
     """
     NetIf implementation for FreeBSD systems
+
+    Not fully implemented or tested
     """
 
     # Prefix for virt network device
@@ -310,7 +320,7 @@ class FreeBSDNetIf(NetIf):
 
     def __init__(self, cni, request):
         super().__init__(cni, request)
-        self.bridge_if.mac_addr = FreeBSDNetId.read_mac_addr(self.request, self.bridge_if.device)
+        self.bridge_if.mac = FreeBSDNetIf.read_mac_addr(self.request, self.bridge_if.device)
 
 
     def create(self):
@@ -325,15 +335,15 @@ class FreeBSDNetIf(NetIf):
         """
         self.allocate()
         self.new_ip()
-        self.virtual_if.mac_addr = NetIf.gen_mac_addr()
+        self.virtual_if.mac = NetIf.gen_mac_addr()
 
         if not self.request.noop:
             try:
                 bridge = self.bridge_if.device
                 device = self.virtual_if.device
-                mac_addr = self.virtual_if.mac_addr
+                mac = self.virtual_if.mac
                 os.system(f'ifconfig {device} create')
-                os.system(f'ifconfig {device} link {mac_addr}')
+                os.system(f'ifconfig {device} link {mac}')
                 os.system(f'ifconfig {bridge} addm {device}')
                 os.system(f'ifconfig {device} up')
             except:
@@ -347,7 +357,7 @@ class FreeBSDNetIf(NetIf):
         """
 
         ifnum = randint(0x00, 0xffffff)
-        self.container_if.device = FreeBSDNetIf.interface_type + f'{ifnum:02x}'
+        self.virtual_if.device = FreeBSDNetIf.interface_type + f'{ifnum:02x}'
 
 
     def delete(self):
@@ -366,9 +376,10 @@ class FreeBSDNetIf(NetIf):
                 os.system("ifconfig " + self.virtual_if.device + " destroy")
             except:
                 return_error(7, "Failed to delete device",
-                        "Failed to delete network device " +
-                        self.virtual_if.device)
+                        "Failed to delete network device")
+
         return True
+
 
     @staticmethod
     def read_mac_addr(request, device):
@@ -418,7 +429,7 @@ class LinuxNetIf(NetIf):
 
     def __init__(self, cni, request):
         super().__init__(cni, request)
-        self.bridge_if.mac_addr = LinuxNetIf.read_mac_addr(self.request, self.bridge_if.device)
+        self.bridge_if.mac = LinuxNetIf.read_mac_addr(self.request, self.bridge_if.device)
 
 
     def create(self):
@@ -429,44 +440,46 @@ class LinuxNetIf(NetIf):
         """
         self.allocate()
         self.new_ip()
-        self.container_if.mac_addr = NetIf.gen_mac_addr()
+        self.container_if.mac = NetIf.gen_mac_addr()
 
+        if self.request.noop:
+            return True
 
-        if not self.request.noop:
-            try:
-                bridge_device = self.bridge_if.device
-                virtual_device = self.virtual_if.device
-                container_device = self.container_if.device
-                container_id = self.request.container_id
-                container_ip = self.container_if.ip
-                gateway = self.cni.gateway
-                netns = self.request.netns
+        try:
+            bridge_device = self.bridge_if.device
+            virtual_device = self.virtual_if.device
+            container_device = self.container_if.device
+            container_id = self.request.container_id
+            container_ip = self.container_if.ip
+            gateway = self.cni.gateway
+            netns = self.request.netns
 
-                os.system(f'ip link add {container_device} type veth \
-                        peer name {virtual_device}')
-                os.system(f'ip link set dev {virtual_device} up')
-                os.system(f'ip link set dev {virtual_device} \
-                        master {bridge_device}')
-                os.system(f'ln -sfT {netns} /var/run/netns/{container_id}')
-                os.system(f'ip netns add {container_id}')
-                os.system(f'ip link set {container_device} \
-                        netns {container_id}')
-                os.system(f'ip netns exec {container_id} ip link \
-                        set {container_device} up')
-                os.system(f'ip netns exec {container_id} ip addr add \
-                        {container_ip} dev {container_device}')
-                os.system(f'ip netns exec {container_id} ip route \
-                        add {gateway} dev {container_device}')
-                os.system(f'ip netns exec {container_id} ip route \
-                        add default via {gateway} dev {container_device}')
+            os.system(f'ip link add {container_device} type veth \
+                    peer name {virtual_device}')
+            os.system(f'ip link set dev {virtual_device} up')
+            os.system(f'ip link set dev {virtual_device} \
+                    master {bridge_device}')
+            os.system(f'ln -sfT {netns} /var/run/netns/{container_id}')
+            os.system(f'ip netns add {container_id}')
+            os.system(f'ip link set {container_device} \
+                    netns {container_id}')
+            os.system(f'ip netns exec {container_id} ip link \
+                    set {container_device} up')
+            os.system(f'ip netns exec {container_id} ip addr add \
+                    {container_ip} dev {container_device}')
+            os.system(f'ip netns exec {container_id} ip route \
+                    add {gateway} dev {container_device}')
+            os.system(f'ip netns exec {container_id} ip route \
+                    add default via {gateway} dev {container_device}')
 
-                self.container_if.mac_addr = self.read_netns_mac_addr()
-                self.virtual_if.mac_addr = \
-                        LinuxNetIf.read_mac_addr(self.request, \
-                        self.virtual_if.device)
-            except:
-                return_error(11, "Failed to create device",
-                        "Failed to create network device " + virtual_device)
+            self.container_if.mac = self.read_netns_mac_addr()
+            self.virtual_if.mac = \
+                    LinuxNetIf.read_mac_addr(self.request, \
+                    self.virtual_if.device)
+        except:
+            return_error(11, "Failed to create device",
+                    "Failed to create network device " + virtual_device)
+
 
     def allocate(self):
         """
@@ -520,16 +533,16 @@ class LinuxNetIf(NetIf):
         """
         Parse device MAC address from ifconfig output
         """
-        if not request.noop:
-            try:
-                ifconfig = subprocess.run(["ip", "-br", "link", "show", device],
-                        stdout=subprocess.PIPE, check=False)
-                ifout = ifconfig.stdout.decode("UTF-8")
-                return ifout.split()[2]
-            except:
-                return 1
-        else:
-            return 0
+        if request.noop:
+            return "aa:bb:cc:dd:dd:dd"
+
+        try:
+            ifconfig = subprocess.run(["ip", "-br", "link", "show", device],
+                    stdout=subprocess.PIPE, check=False)
+            ifout = ifconfig.stdout.decode("UTF-8")
+            return ifout.split()[2]
+        except:
+            return 1
 
 
     def read_netns_mac_addr(self):
@@ -574,10 +587,12 @@ class LinuxNetIf(NetIf):
         return cidr
 
 
+
 class AddResult:
     """
     Holds structure for ADD command results
     """
+
     def __init__(self, cni, request, netif):
         self.cni_version = CNIConfig.read_cni_version()
         self.cni = cni
@@ -594,6 +609,7 @@ class AddResult:
                 }
         ]
 
+
     def set_if_result(self, device):
         """
         Fill missing device class vars
@@ -603,8 +619,8 @@ class AddResult:
         #if device.ip is not None:
         #    result["ip"] = device.ip
 
-        if device.mac_addr is not None:
-            result["mac"] = device.mac_addr
+        if device.mac is not None:
+            result["mac"] = device.mac
 
         if device.device is not None:
             result["name"] = device.device
@@ -614,12 +630,14 @@ class AddResult:
 
         self.interfaces.append(result)
 
+
     def json_output(self):
         """
         ADD result CNI output
         """
         self.set_if_result(self.netif.bridge_if)
         self.set_if_result(self.netif.virtual_if)
+        # container interface: 2
         self.set_if_result(self.netif.container_if)
         self.ips[0]["address"] = self.netif.container_if.ip
         if "dns" in self.cni.config:
@@ -740,7 +758,6 @@ def main():
         command_check()
     elif request.command == "VERSION":
         command_version()
-
 
 
 if __name__ == "__main__":

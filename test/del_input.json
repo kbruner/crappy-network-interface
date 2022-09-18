@@ -1,42 +1,51 @@
 {
+  "bridge": "br0",
   "cniVersion": "1.0.0",
-  "name": "dbnet",
-  "type": "portmap",
-  "runtimeConfig": {
-    "portMappings" : [
-      { "hostPort": 8080, "containerPort": 80, "protocol": "tcp" }
+  "dns": {
+    "nameservers": [
+      "172.16.0.1"
     ]
   },
-  "prevResult": {
-    "ips": [
-        {
-          "address": "10.1.0.5/16",
-          "gateway": "10.1.0.1",
-          "interface": 2
-        }
-    ],
+  "ipam": {
+    "gateway": "172.16.0.1",
     "routes": [
       {
         "dst": "0.0.0.0/0"
       }
     ],
+    "subnet": "172.16.0.0/24",
+    "type": "host-local"
+  },
+  "name": "cni",
+  "prevResult": {
+    "cniVersion": "1.0.0",
     "interfaces": [
-        {
-            "name": "cni0",
-            "mac": "00:11:22:33:44:55"
-        },
-        {
-            "name": "veth3243",
-            "mac": "55:44:33:22:11:11"
-        },
-        {
-            "name": "eth0",
-            "mac": "00:11:22:33:44:66",
-            "sandbox": "/var/run/netns/blue"
-        }
+      {
+        "name": "br0",
+        "mac": "0a:3c:76:15:6d:01"
+      },
+      {
+        "name": "veth3014e",
+        "mac": "1e:10:19:0e:76:6b"
+      },
+      {
+        "name": "eth0",
+        "mac": "82:43:87:55:8e:08",
+        "sandbox": "/var/run/netns/default-6b36f124002d1d43fbce4713f7c36829ce3ba2290bf9d0e6e50123a467f6e923"
+      }
+    ],
+    "ips": [
+      {
+        "interface": 2,
+        "address": "172.16.0.123/24",
+        "gateway": "172.16.0.1"
+      }
     ],
     "dns": {
-      "nameservers": [ "10.1.0.1" ]
+      "nameservers": [
+        "172.16.0.1"
+      ]
     }
-  }
+  },
+  "type": "cni"
 }

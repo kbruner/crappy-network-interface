@@ -25,8 +25,7 @@ post](https://productionwithscissors.run/2022/09/04/containerd-linux-on-freebsd/
 
 * Implement unique IP selection (oops)
 * Implement `portmap` support?
-* (update tests)
-* (lint)
+* Support more than one interface (incorrectly assumes there will be only one)
 
 ## Warning!
 
