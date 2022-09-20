@@ -21,10 +21,12 @@ FreeBSD. However, upstream hooks in `runj` and `containerd` for FreeBSD
 support are still WIP, so this plugin is just a PoC/personal project. For some background, see [this
 post](https://productionwithscissors.run/2022/09/04/containerd-linux-on-freebsd/)
 
-## TODO
 
-* Implement unique IP selection (oops)
-* Implement `portmap` support?
+## Limitations / TODO
+
+* IPv4 only, no IPv6 support
+* Implement unique IP selection
+* No `portmap` support
 * Support more than one interface (incorrectly assumes there will be only one)
 
 ## Warning!
@@ -64,7 +66,22 @@ cp 10-cni-linux.conflist /etc/cni/net.d/10-cni.conflist
 
 ### Add NAT to read the Internet from bridged network
 
-TBD
+*THIS IS TOTALLY INSECURE, DO NOT DO THIS*
+
+Change IP addresses and device names as needed
+
+1. `sysctl -w net.ipv4.ip_forward=1`
+2. `sysctl -w net.ipv4.conf.all.forwarding=1`
+3. `iptables -P FORWARD ACCEPT`
+4. `iptables -P INPUT ACCEPT`
+5. `iptables -P OUTPUT ACCEPT`
+6. `iptables -t nat -A POSTROUTING -s 172.16.0.0/24 ! -o br0 -j MASQUERADE`
+
+If you only want to NAT for one container, you can replace `172.16.0.0/24`
+with the host's `/32` IP address.
+
+If this doesn't work, you can try running `iptables -t nat --flush` first and
+then reapply the `iptables` rules above, but I don't recommend it.
 
 
 ## References
